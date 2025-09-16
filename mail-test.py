@@ -8,32 +8,22 @@ from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
 # -----------------------------
-# CONFIG
+# CONFIGURATION
 # -----------------------------
-# Key Vault configuration
 key_vault_url = "https://akv-tdsif-sif-ci-sec-01.vault.azure.net/"
 
-# Authenticate
 credential = DefaultAzureCredential()
 client = SecretClient(vault_url=key_vault_url, credential=credential)
 
-# Fetch secrets from Key Vault
+print("🔑 Fetching credentials from Azure Key Vault...")
 sender_email = client.get_secret("infosec-email").value
 sender_password = client.get_secret("infosec-pswd").value
+print(f"📧 Sender email retrieved: {sender_email}")
 
-# Recipients list
 recipients = ["t_enaganti.kkumar@tatadigital.com"]
-
-# CC (always included)
 cc_list = ["t_enaganti.kkumar@tatadigital.com"]
-
-# SMTP Configuration
-smtp_server = "smtp.office365.com"
-smtp_port = 587
-
-# Input file (Excel) and sheet index
 input_file = "NonFS_NonCompliant_Repos.xlsx"
-sheet_index = 0  # first sheet
+sheet_index = 0
 
 # -----------------------------
 # FUNCTION: Build HTML Table
@@ -41,19 +31,16 @@ sheet_index = 0  # first sheet
 def build_html_table(df):
     html_table = """
     <table border="1" cellspacing="0" cellpadding="5" style="border-collapse: collapse; width: 100%; word-wrap: break-word;">
-        <tr style="background-color: lightblue; font-weight: bold; text-align: center;">
+    <tr style="background-color: lightblue; font-weight: bold; text-align: center;">
     """
-
-    # Header
     for col in df.columns:
         html_table += f"<th style='padding: 5px; white-space: nowrap;'>{col}</th>"
     html_table += "</tr>"
 
-    # Rows
     for _, row in df.iterrows():
         html_table += "<tr>"
         for col in df.columns:
-            value = row[col] if pd.notna(row[col]) else ""  # keep blank if NaN
+            value = row[col] if pd.notna(row[col]) else ""
             html_table += f"<td style='padding: 5px; word-wrap: break-word;'>{value}</td>"
         html_table += "</tr>"
 
@@ -64,33 +51,42 @@ def build_html_table(df):
 # FUNCTION: Send Email
 # -----------------------------
 def send_email(to_emails, cc_emails, subject, html_content, attachment_path=None):
+    smtp_server = "smtp.office365.com"
+    smtp_port = 587
+
     msg = MIMEMultipart()
     msg["From"] = sender_email
     msg["To"] = ", ".join(to_emails)
     msg["Cc"] = ", ".join(cc_emails)
     msg["Subject"] = subject
 
-    # Attach HTML content
     msg.attach(MIMEText(html_content, "html"))
 
-    # Attach file if provided
     if attachment_path:
-        with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header(
-            "Content-Disposition",
-            f"attachment; filename={attachment_path.split('/')[-1]}"
-        )
-        msg.attach(part)
+        try:
+            with open(attachment_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename={attachment_path.split('/')[-1]}"
+            )
+            msg.attach(part)
+            print(f"📎 Attached file: {attachment_path}")
+        except Exception as e:
+            print(f"❌ Failed to attach file: {e}")
+            return
 
     all_recipients = to_emails + cc_emails
 
     try:
+        print(f"📤 Connecting to SMTP server {smtp_server}:{smtp_port}...")
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()
+        print("🔐 TLS connection established.")
         server.login(sender_email, sender_password)
+        print("🔑 Logged in to SMTP server.")
         server.sendmail(sender_email, all_recipients, msg.as_string())
         server.quit()
         print(f"✅ Email sent to: {', '.join(all_recipients)}")
@@ -101,20 +97,26 @@ def send_email(to_emails, cc_emails, subject, html_content, attachment_path=None
 # MAIN SCRIPT
 # -----------------------------
 def main():
-    # Read Excel sheet
-    df = pd.read_excel(input_file, sheet_name=sheet_index)
+    print("🔄 Starting script...")
+    try:
+        print(f"📂 Reading Excel file: {input_file}")
+        df = pd.read_excel(input_file, sheet_name=sheet_index)
+        print("✅ Excel file loaded successfully.")
+    except Exception as e:
+        print(f"❌ Error reading Excel file: {e}")
+        return
 
-    # Build HTML table
+    print("🧱 Building HTML table...")
     html_table = build_html_table(df)
+    print("✅ HTML table created.")
 
-    # Email content
     html_content = f"""
     <p>Hi All,</p>
     <p>As we are aware that CheckMarx policy enforcement is implemented in repos on all branches, however we found non-compliance on repos for the following cases:</p>
     <ul>
-        <li>Branch protection policy check - Status checks to pass before merging is disabled</li>
-        <li>If Branch Protection policy is enabled, the corresponding pipeline is missing for the repo</li>
-        <li>If above two conditions are met, PR validation check is missing</li>
+    <li>Branch protection policy check - Status checks to pass before merging is disabled</li>
+    <li>If Branch Protection policy is enabled, the corresponding pipeline is missing for the repo</li>
+    <li>If above two conditions are met, PR validation check is missing</li>
     </ul>
     <p>Below is the count of non-compliant repos per application, please share the ETA as per the table:</p>
     {html_table}
@@ -123,8 +125,14 @@ def main():
     <p>Thanks,<br>Infosec Team</p>
     """
 
-    # Send email with attachment
-    send_email(recipients, cc_list, "Non-Compliant NonFS Repos - Checkmarx Policy Enforcement -- testing", html_content, attachment_path=input_file)
+    print("📧 Preparing to send email...")
+    send_email(
+        recipients,
+        cc_list,
+        "Non-Compliant NonFS Repos - Checkmarx Policy Enforcement -- testing",
+        html_content,
+        attachment_path=input_file
+    )
 
 if __name__ == "__main__":
     main()
