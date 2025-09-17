@@ -36,7 +36,8 @@ declare -A IGNORE_LOOKUP
 # Logging function with IST time
 log() {
   local ist_time=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %H:%M:%S IST")
-  echo "[$ist_time] $*"
+  # --- FIX: Redirect echo to standard error (>&2) to prevent it from being captured by command substitution ---
+  echo "[$ist_time] $*" >&2
 }
 
 # Function to check if Azure CLI is installed and authenticated
@@ -119,7 +120,7 @@ load_ignore_to_lookup() {
     log "Warning: Ignore file not found: $ignore_file"
     return 0
   fi
- 
+
   log "Loading ignore CSV: $ignore_file"
   local loaded_count=0
   
@@ -177,7 +178,7 @@ load_owners_to_lookup() {
     log "Warning: Owners file not found: $csv_file"
     return 0
   fi
- 
+
   log "Loading owners CSV: $csv_file"
   local loaded_count=0
   
@@ -211,12 +212,12 @@ get_owner_email() {
 load_csv_to_lookup() {
   local file="$1"
   local -n map_ref=$2
- 
+
   if [[ ! -f "$file" ]]; then
     log "Warning: CSV file not found: $file"
     return 0
   fi
- 
+
   log "Loading CSV: $file"
   local loaded_count=0
   
@@ -398,7 +399,7 @@ is_pr_validation_enabled() {
   
   local url="https://dev.azure.com/$org/${project// /%20}/_apis/build/definitions/$pipeline_id?api-version=7.0"
   local response=$(curl -s -u ":$token" "$url" 2>/dev/null)
- 
+
   if echo "$response" | jq -e '.triggers[]? | select(.triggerType=="pullRequest")' >/dev/null 2>&1; then
     echo "enabled"
   else
@@ -487,7 +488,7 @@ process_organization() {
     local repos=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/orgs/$org/repos?per_page=100&page=$page")
     local repo_names=$(echo "$repos" | jq -r '.[].name' 2>/dev/null)
     [[ -z "$repo_names" ]] && break
- 
+
     for repo in $repo_names; do
       log "  Repo: $repo"
       
@@ -596,26 +597,26 @@ select_organizations() {
     org_array+=("$org")
   done <<< "$orgs"
   
-  echo ""
-  echo "Available GitHub Organizations:"
-  echo "==============================="
+  echo "" >&2
+  echo "Available GitHub Organizations:" >&2
+  echo "===============================" >&2
   for i in "${!org_array[@]}"; do
-    printf "%2d. %s" $((i+1)) "${org_array[$i]}"
-    [[ "${org_array[$i]}" == "$STRATEGIC_INITIATIVE_GITHUB_ORG" ]] && printf " 🎯"
-    printf "\n"
+    printf "%2d. %s" $((i+1)) "${org_array[$i]}" >&2
+    [[ "${org_array[$i]}" == "$STRATEGIC_INITIATIVE_GITHUB_ORG" ]] && printf " 🎯" >&2
+    printf "\n" >&2
   done
-  echo ""
-  printf "%2s. %s\n" "A" "All organizations"
-  echo ""
+  echo "" >&2
+  printf "%2s. %s\n" "A" "All organizations" >&2
+  echo "" >&2
   
   local selected_orgs=()
   while true; do
-    echo "Select organization(s) to process:"
-    echo "• Number (1-${#org_array[@]}) for specific org"
-    echo "• 'A' for all organizations"  
-    echo "• Multiple numbers separated by spaces"
-    echo "• 'q' to quit"
-    echo ""
+    echo "Select organization(s) to process:" >&2
+    echo "• Number (1-${#org_array[@]}) for specific org" >&2
+    echo "• 'A' for all organizations" >&2
+    echo "• Multiple numbers separated by spaces" >&2
+    echo "• 'q' to quit" >&2
+    echo "" >&2
     read -p "Selection: " selection
     
     [[ "$selection" == "q" ]] && { log "Exiting..."; exit 0; }
@@ -633,7 +634,7 @@ select_organizations() {
       if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#org_array[@]} )); then
         selected_orgs+=("${org_array[$((num-1))]}")
       else
-        echo "Invalid selection: $num"
+        echo "Invalid selection: $num" >&2
         valid_selection=false
         break
       fi
@@ -646,7 +647,7 @@ select_organizations() {
       done
       break
     fi
-    echo ""
+    echo "" >&2
   done
   
   SELECTED_ORGS=("${selected_orgs[@]}")
