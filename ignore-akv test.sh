@@ -824,15 +824,34 @@ process_organization() {
 }
 
 # Select organizations function
+# Select organizations function
 select_organizations() {
   log "Fetching available GitHub organizations..."
   
   local orgs_response
   orgs_response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user/orgs")
   
-  if [[ $(echo "$orgs_response" | jq -r 'type') != "array" ]]; then
-    log "Error fetching organizations from GitHub API"
-    echo "$orgs_response" | jq -r '.message // "Unknown error"'
+  # Debug: Show what we received
+  log "Debug: API response preview: ${orgs_response:0:100}..."
+  
+  # Check if response is empty
+  if [[ -z "$orgs_response" ]]; then
+    log "Error: Empty response from GitHub API"
+    exit 1
+  fi
+  
+  # Check if response contains error message
+  if echo "$orgs_response" | jq -e '.message' >/dev/null 2>&1; then
+    local error_msg=$(echo "$orgs_response" | jq -r '.message')
+    log "Error from GitHub API: $error_msg"
+    exit 1
+  fi
+  
+  # Check if response is a valid array
+  if ! echo "$orgs_response" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    log "Error: Invalid response format from GitHub API"
+    log "Response type: $(echo "$orgs_response" | jq -r 'type' 2>/dev/null || echo "invalid JSON")"
+    log "Full response: $orgs_response"
     exit 1
   fi
   
@@ -843,6 +862,8 @@ select_organizations() {
     log "No organizations found or accessible with the provided token"
     exit 1
   fi
+  
+  # Rest of the function remains the same...
   
   local org_array=()
   while IFS= read -r org; do
