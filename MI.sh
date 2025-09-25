@@ -13,7 +13,6 @@ AZDO_PAT_HE_SECRET_NAME="azdo-pat-he"
 GITHUB_TOKEN=""
 AZDO_PAT_DEV=""
 AZDO_PAT_HE=""
-GITHUB_AUTH_METHOD=""
 
 # Other configurations
 AZDO_ORG_DEV="TDL-TCP-DEV"
@@ -37,7 +36,7 @@ declare -A IGNORE_LOOKUP
 # Logging function with IST time
 log() {
   local ist_time=$(TZ='Asia/Kolkata' date +"%Y-%m-%d %H:%M:%S IST")
-  echo "[$ist_time] $*"
+  echo "[$ist_time] $*" >&2 # <<< THE FIX IS HERE
 }
 
 # Function to get access token using VM Managed Identity
@@ -101,7 +100,7 @@ get_secret_from_akv_with_managed_identity() {
   # Construct Key Vault URL
   local vault_url="https://${KEY_VAULT_NAME}.vault.azure.net/secrets/${secret_name}?api-version=7.4"
   
-  # Fetch secret from Key Vault (suppress all output except the actual response)
+  # Fetch secret from Key Vault
   local secret_response=$(curl -s -H "Authorization: Bearer $access_token" "$vault_url" 2>/dev/null)
   
   if [[ $? -ne 0 ]] || [[ -z "$secret_response" ]]; then
@@ -116,15 +115,14 @@ get_secret_from_akv_with_managed_identity() {
     exit 1
   fi
   
-  # Extract secret value (ensure clean extraction)
-  local secret_value=$(echo "$secret_response" | jq -r '.value' 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  # Extract secret value
+  local secret_value=$(echo "$secret_response" | jq -r '.value' 2>/dev/null)
   
   if [[ -z "$secret_value" ]] || [[ "$secret_value" == "null" ]]; then
     log "Error: Invalid secret value for '$secret_name'"
     exit 1
   fi
   
-  # Return only the clean secret value
   echo "$secret_value"
 }
 
@@ -154,26 +152,18 @@ load_tokens_from_akv_managed_identity() {
   # Check for managed identity availability
   check_managed_identity
   
-  # Fetch GitHub token (required) - capture without logging interference
-  log "Fetching GitHub token..."
+  # Fetch GitHub token (required)
   GITHUB_TOKEN=$(get_secret_from_akv_with_managed_identity "$GITHUB_TOKEN_SECRET_NAME")
-  
-  # Clean the token of any potential whitespace or control characters
-  GITHUB_TOKEN=$(echo "$GITHUB_TOKEN" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   
   # Fetch Azure DevOps tokens (optional)
   if secret_exists_in_akv "$AZDO_PAT_DEV_SECRET_NAME"; then
-    log "Fetching Azure DevOps DEV token..."
     AZDO_PAT_DEV=$(get_secret_from_akv_with_managed_identity "$AZDO_PAT_DEV_SECRET_NAME")
-    AZDO_PAT_DEV=$(echo "$AZDO_PAT_DEV" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   else
     log "Warning: Azure DevOps DEV token not found in Key Vault"
   fi
   
   if secret_exists_in_akv "$AZDO_PAT_HE_SECRET_NAME"; then
-    log "Fetching Azure DevOps HE token..."
     AZDO_PAT_HE=$(get_secret_from_akv_with_managed_identity "$AZDO_PAT_HE_SECRET_NAME")
-    AZDO_PAT_HE=$(echo "$AZDO_PAT_HE" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   else
     log "Warning: Azure DevOps HE token not found in Key Vault"
   fi
@@ -183,15 +173,10 @@ load_tokens_from_akv_managed_identity() {
     exit 1
   fi
   
-  # Validate token format (GitHub tokens should start with ghp_, gho_, ghu_, ghs_, or ghr_)
-  if [[ ! "$GITHUB_TOKEN" =~ ^gh[pous]_[A-Za-z0-9_]+ ]]; then
-    log "Warning: GitHub token format appears invalid (should start with ghp_, gho_, ghu_, ghs_, or ghr_)"
-  fi
-  
   log "✓ Tokens loaded successfully using Managed Identity"
   log "  GitHub Token: ${GITHUB_TOKEN:0:7}... (${#GITHUB_TOKEN} chars)"
-  [[ -n "$AZDO_PAT_DEV" ]] && log "  Azure DevOps DEV Token: Available (${#AZDO_PAT_DEV} chars)"
-  [[ -n "$AZDO_PAT_HE" ]] && log "  Azure DevOps HE Token: Available (${#AZDO_PAT_HE} chars)"
+  [[ -n "$AZDO_PAT_DEV" ]] && log "  Azure DevOps DEV Token: Available"
+  [[ -n "$AZDO_PAT_HE" ]] && log "  Azure DevOps HE Token: Available"
 }
 
 # Pipeline name cleaning
@@ -411,7 +396,7 @@ check_compliance() {
     local org="$1" repo="$2" branch="$3" status_checks="$4" contexts="$5" pr_validation="$6"
     
     if should_ignore_repo "$org" "$repo"; then
-        log "        ⚠️  Repository ignored"
+        log "              ⚠️  Repository ignored"
         return 1
     fi
     
@@ -433,10 +418,10 @@ check_compliance() {
     
     if [ "$is_non_compliant" = true ]; then
         NON_COMPLIANT_REPOS["${org}|${repo}|${branch}"]="$org,$repo,$branch,$status_checks,$contexts,$pr_validation"
-        log "        ✗ Non-compliant: $reason"
+        log "              ✗ Non-compliant: $reason"
         return 0
     else
-        log "        ✓ Compliant"
+        log "              ✓ Compliant"
         return 1
     fi
 }
@@ -502,8 +487,7 @@ is_pr_validation_enabled() {
 check_github_pr_webhook_standalone() {
   local org="$1" repo="$2"
   
-  local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
-  local webhooks_response=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/hooks" 2>/dev/null)
+  local webhooks_response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/hooks" 2>/dev/null)
   local pr_webhook_found=$(echo "$webhooks_response" | jq -r '.[] | select(.events[]? == "pull_request") | .id' 2>/dev/null)
   
   [[ -n "$pr_webhook_found" ]] && echo "enabled" || echo "disabled"
@@ -520,8 +504,7 @@ process_standalone_validation() {
 get_branch_protection_details() {
   local org="$1" repo="$2" branch="$3"
   
-  local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
-  local protection=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/branches/$branch/protection" 2>/dev/null)
+  local protection=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/branches/$branch/protection" 2>/dev/null)
   
   if [[ $(echo "$protection" | jq -r '.message' 2>/dev/null) == "Branch not protected" ]]; then
     echo "NA|NA|NA"
@@ -578,15 +561,14 @@ process_organization() {
   
   local page=1
   while :; do
-    local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
-    local repos=$(curl -s -H "$auth_header" "$GITHUB_API/orgs/$org/repos?per_page=100&page=$page")
+    local repos=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/orgs/$org/repos?per_page=100&page=$page")
     local repo_names=$(echo "$repos" | jq -r '.[].name' 2>/dev/null)
     [[ -z "$repo_names" ]] && break
  
     for repo in $repo_names; do
       log "  Repo: $repo"
       
-      local protected_branches=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/branches?protected=true" 2>/dev/null)
+      local protected_branches=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/branches?protected=true" 2>/dev/null)
       
       if [[ $(echo "$protected_branches" | jq -r 'type' 2>/dev/null) != "array" ]]; then
         for target_branch in "main" "staging" "release"; do
@@ -649,60 +631,19 @@ process_organization() {
   log "✓ Completed processing: $org"
 }
 
-# Debug function to test token directly
-debug_github_token() {
-  log "=== DEBUG: Testing GitHub Token ==="
-  log "Token length: ${#GITHUB_TOKEN}"
-  log "Token starts with: ${GITHUB_TOKEN:0:10}..."
-  log "Token ends with: ...${GITHUB_TOKEN: -5}"
-  
-  # Check for any non-printable characters
-  local clean_token=$(echo "$GITHUB_TOKEN" | tr -cd '[:print:]')
-  if [[ "$GITHUB_TOKEN" != "$clean_token" ]]; then
-    log "Warning: Token contains non-printable characters"
-    GITHUB_TOKEN="$clean_token"
-    log "Cleaned token length: ${#GITHUB_TOKEN}"
-  fi
-  
-  # Test with a simple API call
-  log "Testing direct API call..."
-  local test_user_bearer=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" 2>/dev/null)
-  local test_user_token=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$GITHUB_API/user" 2>/dev/null)
-  
-  log "Bearer auth response: $(echo "$test_user_bearer" | jq -r '.login // .message // "Invalid response"' 2>/dev/null)"
-  log "Token auth response: $(echo "$test_user_token" | jq -r '.login // .message // "Invalid response"' 2>/dev/null)"
-  log "=== END DEBUG ==="
-}
-
 # Select organizations function with robust error handling
 select_organizations() {
   log "Fetching available GitHub organizations..."
   
-  # Debug: Show token length and first few characters (masked for security)
-  log "Debug: GitHub token length: ${#GITHUB_TOKEN} chars, starts with: ${GITHUB_TOKEN:0:7}..."
-  
-  # Test connection first - try both token formats
-  local test_response_bearer=$(curl -s -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null 2>/dev/null)
-  local test_response_token=$(curl -s -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null 2>/dev/null)
-  
-  log "Debug: Bearer auth response: $test_response_bearer"
-  log "Debug: Token auth response: $test_response_token"
-  
-  local auth_header=""
-  if [[ "$test_response_bearer" == "200" ]]; then
-    auth_header="Authorization: Bearer $GITHUB_TOKEN"
-    log "✓ Using Bearer authentication"
-  elif [[ "$test_response_token" == "200" ]]; then
-    auth_header="Authorization: token $GITHUB_TOKEN"
-    log "✓ Using Token authentication"
-  else
-    log "Error: GitHub API connection failed with both auth methods"
-    log "Bearer response: $test_response_bearer, Token response: $test_response_token"
+  # Test connection first
+  local test_response=$(curl -s -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null)
+  if [[ "$test_response" != "200" ]]; then
+    log "Error: GitHub API connection failed (HTTP $test_response)"
     log "Please check your GitHub token permissions"
     exit 1
   fi
   
-  local orgs_response=$(curl -s -H "$auth_header" "$GITHUB_API/user/orgs")
+  local orgs_response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user/orgs")
   
   if [[ -z "$orgs_response" ]]; then
     log "Error: Empty response from GitHub API"
@@ -732,26 +673,26 @@ select_organizations() {
     org_array+=("$org")
   done <<< "$orgs"
   
-  echo ""
-  echo "Available GitHub Organizations:"
-  echo "==============================="
+  echo "" >&2
+  echo "Available GitHub Organizations:" >&2
+  echo "===============================" >&2
   for i in "${!org_array[@]}"; do
-    printf "%2d. %s" $((i+1)) "${org_array[$i]}"
-    [[ "${org_array[$i]}" == "$STRATEGIC_INITIATIVE_GITHUB_ORG" ]] && printf " 🎯"
-    printf "\n"
+    printf "%2d. %s" $((i+1)) "${org_array[$i]}" >&2
+    [[ "${org_array[$i]}" == "$STRATEGIC_INITIATIVE_GITHUB_ORG" ]] && printf " 🎯" >&2
+    printf "\n" >&2
   done
-  echo ""
-  printf "%2s. %s\n" "A" "All organizations"
-  echo ""
+  echo "" >&2
+  printf "%2s. %s\n" "A" "All organizations" >&2
+  echo "" >&2
   
   local selected_orgs=()
   while true; do
-    echo "Select organization(s) to process:"
-    echo "• Number (1-${#org_array[@]}) for specific org"
-    echo "• 'A' for all organizations"  
-    echo "• Multiple numbers separated by spaces"
-    echo "• 'q' to quit"
-    echo ""
+    echo "Select organization(s) to process:" >&2
+    echo "• Number (1-${#org_array[@]}) for specific org" >&2
+    echo "• 'A' for all organizations" >&2
+    echo "• Multiple numbers separated by spaces" >&2
+    echo "• 'q' to quit" >&2
+    echo "" >&2
     read -p "Selection: " selection
     
     [[ "$selection" == "q" ]] && { log "Exiting..."; exit 0; }
@@ -769,7 +710,7 @@ select_organizations() {
       if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#org_array[@]} )); then
         selected_orgs+=("${org_array[$((num-1))]}")
       else
-        echo "Invalid selection: $num"
+        echo "Invalid selection: $num" >&2
         valid_selection=false
         break
       fi
@@ -782,19 +723,10 @@ select_organizations() {
       done
       break
     fi
-    echo ""
+    echo "" >&2
   done
   
-  # Determine which auth method to use based on successful test
-  local auth_method=""
-  if [[ "$test_response_bearer" == "200" ]]; then
-    auth_method="Bearer"
-  elif [[ "$test_response_token" == "200" ]]; then
-    auth_method="token"
-  fi
-  
   SELECTED_ORGS=("${selected_orgs[@]}")
-  GITHUB_AUTH_METHOD="$auth_method"
 }
 
 # --- MAIN EXECUTION ---
@@ -817,9 +749,6 @@ load_tokens_from_akv_managed_identity
 
 # Load ignore list
 load_ignore_to_lookup
-
-# Debug the GitHub token
-debug_github_token
 
 # Select organizations
 select_organizations
