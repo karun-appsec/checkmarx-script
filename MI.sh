@@ -101,7 +101,7 @@ get_secret_from_akv_with_managed_identity() {
   # Construct Key Vault URL
   local vault_url="https://${KEY_VAULT_NAME}.vault.azure.net/secrets/${secret_name}?api-version=7.4"
   
-  # Fetch secret from Key Vault
+  # Fetch secret from Key Vault (suppress all output except the actual response)
   local secret_response=$(curl -s -H "Authorization: Bearer $access_token" "$vault_url" 2>/dev/null)
   
   if [[ $? -ne 0 ]] || [[ -z "$secret_response" ]]; then
@@ -116,14 +116,15 @@ get_secret_from_akv_with_managed_identity() {
     exit 1
   fi
   
-  # Extract secret value
-  local secret_value=$(echo "$secret_response" | jq -r '.value' 2>/dev/null)
+  # Extract secret value (ensure clean extraction)
+  local secret_value=$(echo "$secret_response" | jq -r '.value' 2>/dev/null | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   
   if [[ -z "$secret_value" ]] || [[ "$secret_value" == "null" ]]; then
     log "Error: Invalid secret value for '$secret_name'"
     exit 1
   fi
   
+  # Return only the clean secret value
   echo "$secret_value"
 }
 
@@ -153,18 +154,26 @@ load_tokens_from_akv_managed_identity() {
   # Check for managed identity availability
   check_managed_identity
   
-  # Fetch GitHub token (required)
+  # Fetch GitHub token (required) - capture without logging interference
+  log "Fetching GitHub token..."
   GITHUB_TOKEN=$(get_secret_from_akv_with_managed_identity "$GITHUB_TOKEN_SECRET_NAME")
+  
+  # Clean the token of any potential whitespace or control characters
+  GITHUB_TOKEN=$(echo "$GITHUB_TOKEN" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   
   # Fetch Azure DevOps tokens (optional)
   if secret_exists_in_akv "$AZDO_PAT_DEV_SECRET_NAME"; then
+    log "Fetching Azure DevOps DEV token..."
     AZDO_PAT_DEV=$(get_secret_from_akv_with_managed_identity "$AZDO_PAT_DEV_SECRET_NAME")
+    AZDO_PAT_DEV=$(echo "$AZDO_PAT_DEV" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   else
     log "Warning: Azure DevOps DEV token not found in Key Vault"
   fi
   
   if secret_exists_in_akv "$AZDO_PAT_HE_SECRET_NAME"; then
+    log "Fetching Azure DevOps HE token..."
     AZDO_PAT_HE=$(get_secret_from_akv_with_managed_identity "$AZDO_PAT_HE_SECRET_NAME")
+    AZDO_PAT_HE=$(echo "$AZDO_PAT_HE" | tr -d '\n\r\t' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   else
     log "Warning: Azure DevOps HE token not found in Key Vault"
   fi
@@ -174,10 +183,15 @@ load_tokens_from_akv_managed_identity() {
     exit 1
   fi
   
+  # Validate token format (GitHub tokens should start with ghp_, gho_, ghu_, ghs_, or ghr_)
+  if [[ ! "$GITHUB_TOKEN" =~ ^gh[pous]_[A-Za-z0-9_]+ ]]; then
+    log "Warning: GitHub token format appears invalid (should start with ghp_, gho_, ghu_, ghs_, or ghr_)"
+  fi
+  
   log "✓ Tokens loaded successfully using Managed Identity"
   log "  GitHub Token: ${GITHUB_TOKEN:0:7}... (${#GITHUB_TOKEN} chars)"
-  [[ -n "$AZDO_PAT_DEV" ]] && log "  Azure DevOps DEV Token: Available"
-  [[ -n "$AZDO_PAT_HE" ]] && log "  Azure DevOps HE Token: Available"
+  [[ -n "$AZDO_PAT_DEV" ]] && log "  Azure DevOps DEV Token: Available (${#AZDO_PAT_DEV} chars)"
+  [[ -n "$AZDO_PAT_HE" ]] && log "  Azure DevOps HE Token: Available (${#AZDO_PAT_HE} chars)"
 }
 
 # Pipeline name cleaning
@@ -635,6 +649,31 @@ process_organization() {
   log "✓ Completed processing: $org"
 }
 
+# Debug function to test token directly
+debug_github_token() {
+  log "=== DEBUG: Testing GitHub Token ==="
+  log "Token length: ${#GITHUB_TOKEN}"
+  log "Token starts with: ${GITHUB_TOKEN:0:10}..."
+  log "Token ends with: ...${GITHUB_TOKEN: -5}"
+  
+  # Check for any non-printable characters
+  local clean_token=$(echo "$GITHUB_TOKEN" | tr -cd '[:print:]')
+  if [[ "$GITHUB_TOKEN" != "$clean_token" ]]; then
+    log "Warning: Token contains non-printable characters"
+    GITHUB_TOKEN="$clean_token"
+    log "Cleaned token length: ${#GITHUB_TOKEN}"
+  fi
+  
+  # Test with a simple API call
+  log "Testing direct API call..."
+  local test_user_bearer=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" 2>/dev/null)
+  local test_user_token=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "$GITHUB_API/user" 2>/dev/null)
+  
+  log "Bearer auth response: $(echo "$test_user_bearer" | jq -r '.login // .message // "Invalid response"' 2>/dev/null)"
+  log "Token auth response: $(echo "$test_user_token" | jq -r '.login // .message // "Invalid response"' 2>/dev/null)"
+  log "=== END DEBUG ==="
+}
+
 # Select organizations function with robust error handling
 select_organizations() {
   log "Fetching available GitHub organizations..."
@@ -778,6 +817,9 @@ load_tokens_from_akv_managed_identity
 
 # Load ignore list
 load_ignore_to_lookup
+
+# Debug the GitHub token
+debug_github_token
 
 # Select organizations
 select_organizations
