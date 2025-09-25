@@ -13,6 +13,7 @@ AZDO_PAT_HE_SECRET_NAME="azdo-pat-he"
 GITHUB_TOKEN=""
 AZDO_PAT_DEV=""
 AZDO_PAT_HE=""
+GITHUB_AUTH_METHOD=""
 
 # Other configurations
 AZDO_ORG_DEV="TDL-TCP-DEV"
@@ -487,7 +488,8 @@ is_pr_validation_enabled() {
 check_github_pr_webhook_standalone() {
   local org="$1" repo="$2"
   
-  local webhooks_response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/hooks" 2>/dev/null)
+  local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
+  local webhooks_response=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/hooks" 2>/dev/null)
   local pr_webhook_found=$(echo "$webhooks_response" | jq -r '.[] | select(.events[]? == "pull_request") | .id' 2>/dev/null)
   
   [[ -n "$pr_webhook_found" ]] && echo "enabled" || echo "disabled"
@@ -504,7 +506,8 @@ process_standalone_validation() {
 get_branch_protection_details() {
   local org="$1" repo="$2" branch="$3"
   
-  local protection=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/branches/$branch/protection" 2>/dev/null)
+  local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
+  local protection=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/branches/$branch/protection" 2>/dev/null)
   
   if [[ $(echo "$protection" | jq -r '.message' 2>/dev/null) == "Branch not protected" ]]; then
     echo "NA|NA|NA"
@@ -561,14 +564,15 @@ process_organization() {
   
   local page=1
   while :; do
-    local repos=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/orgs/$org/repos?per_page=100&page=$page")
+    local auth_header="Authorization: $GITHUB_AUTH_METHOD $GITHUB_TOKEN"
+    local repos=$(curl -s -H "$auth_header" "$GITHUB_API/orgs/$org/repos?per_page=100&page=$page")
     local repo_names=$(echo "$repos" | jq -r '.[].name' 2>/dev/null)
     [[ -z "$repo_names" ]] && break
  
     for repo in $repo_names; do
       log "  Repo: $repo"
       
-      local protected_branches=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/repos/$org/$repo/branches?protected=true" 2>/dev/null)
+      local protected_branches=$(curl -s -H "$auth_header" "$GITHUB_API/repos/$org/$repo/branches?protected=true" 2>/dev/null)
       
       if [[ $(echo "$protected_branches" | jq -r 'type' 2>/dev/null) != "array" ]]; then
         for target_branch in "main" "staging" "release"; do
@@ -635,15 +639,31 @@ process_organization() {
 select_organizations() {
   log "Fetching available GitHub organizations..."
   
-  # Test connection first
-  local test_response=$(curl -s -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null)
-  if [[ "$test_response" != "200" ]]; then
-    log "Error: GitHub API connection failed (HTTP $test_response)"
+  # Debug: Show token length and first few characters (masked for security)
+  log "Debug: GitHub token length: ${#GITHUB_TOKEN} chars, starts with: ${GITHUB_TOKEN:0:7}..."
+  
+  # Test connection first - try both token formats
+  local test_response_bearer=$(curl -s -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null 2>/dev/null)
+  local test_response_token=$(curl -s -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$GITHUB_API/user" -o /dev/null 2>/dev/null)
+  
+  log "Debug: Bearer auth response: $test_response_bearer"
+  log "Debug: Token auth response: $test_response_token"
+  
+  local auth_header=""
+  if [[ "$test_response_bearer" == "200" ]]; then
+    auth_header="Authorization: Bearer $GITHUB_TOKEN"
+    log "✓ Using Bearer authentication"
+  elif [[ "$test_response_token" == "200" ]]; then
+    auth_header="Authorization: token $GITHUB_TOKEN"
+    log "✓ Using Token authentication"
+  else
+    log "Error: GitHub API connection failed with both auth methods"
+    log "Bearer response: $test_response_bearer, Token response: $test_response_token"
     log "Please check your GitHub token permissions"
     exit 1
   fi
   
-  local orgs_response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "$GITHUB_API/user/orgs")
+  local orgs_response=$(curl -s -H "$auth_header" "$GITHUB_API/user/orgs")
   
   if [[ -z "$orgs_response" ]]; then
     log "Error: Empty response from GitHub API"
@@ -726,7 +746,16 @@ select_organizations() {
     echo ""
   done
   
+  # Determine which auth method to use based on successful test
+  local auth_method=""
+  if [[ "$test_response_bearer" == "200" ]]; then
+    auth_method="Bearer"
+  elif [[ "$test_response_token" == "200" ]]; then
+    auth_method="token"
+  fi
+  
   SELECTED_ORGS=("${selected_orgs[@]}")
+  GITHUB_AUTH_METHOD="$auth_method"
 }
 
 # --- MAIN EXECUTION ---
